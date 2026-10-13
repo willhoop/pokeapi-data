@@ -1,0 +1,63 @@
+# Archive sync: copy what PokeAPI adds or changes, and never delete anything.
+#
+# This repository is an archive of PokeAPI's raw data (a fork of PokeAPI/api-data), kept so that
+# HoopaDex still has the data if pokeapi.co is down or the project changes. The rule, set by the
+# owner: the sync is for future things only - it adds new files and updates changed ones, and it
+# never removes a file, even when PokeAPI does. Every earlier version stays in the git history,
+# because nothing here is ever force-pushed.
+#
+# GitHub's "Sync fork" button must NOT be used on this repository: it merges upstream deletions.
+
+name: Archive sync (add and update only)
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'     # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: archive-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the archive
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fetch PokeAPI's latest data
+        run: git clone --depth 1 https://github.com/PokeAPI/api-data.git /tmp/upstream
+
+      - name: Copy new and changed files (rsync without --delete)
+        # --delete is absent on purpose: a file PokeAPI removes stays here.
+        run: rsync -a --checksum /tmp/upstream/data/ data/
+
+      - name: Refuse to remove anything
+        run: |
+          git add -A data
+          removed=$(git diff --cached --diff-filter=D --name-only | wc -l)
+          if [ "$removed" -ne 0 ]; then
+            echo "This sync would remove $removed files; the archive never removes files. Stopping."
+            git diff --cached --diff-filter=D --name-only | head -20
+            exit 1
+          fi
+
+      - name: Commit and push (never forced)
+        run: |
+          if git diff --cached --quiet; then
+            echo "Nothing new from PokeAPI."
+            exit 0
+          fi
+          added=$(git diff --cached --diff-filter=A --name-only | wc -l)
+          changed=$(git diff --cached --diff-filter=M --name-only | wc -l)
+          upstream=$(git -C /tmp/upstream rev-parse --short HEAD)
+          git config user.name "archive-sync"
+          git config user.email "archive-sync@users.noreply.github.com"
+          git commit -m "archive sync $(date -u +%F): PokeAPI/api-data $upstream - $added added, $changed updated, 0 removed"
+          git push
